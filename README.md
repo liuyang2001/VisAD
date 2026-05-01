@@ -23,20 +23,14 @@ Install the required dependencies based on `requirement.txt`:
 pip install -r requirement.txt
 ```
 
-**Step 2: Dataset Preparation**
-
-Place the dataset files into the corresponding folders:
-- SKAB: The .csv files are already included in data/dataset/SKAB/. You can directly proceed to evaluation.
-- ATSADBench: Access to this data is subject to confidentiality arrangements. Once obtained, please place the corresponding .xlsx files into data/dataset/ATSADBench/.
-
-**Step 3: Configuration**
+**Step 2: Configuration**
 
 Open config/main_config_skab.yaml and config/main_config_atsad.yaml, and fill in your API Key:
 - `model_name`
 - `api_key`
 - `base_url`
 
-**Step 4: Build Reference Libraries**
+**Step 3: Build Reference Libraries**
 
 Run the initialization scripts to build the reference normal window set:
 ```bash
