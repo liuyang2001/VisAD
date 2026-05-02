@@ -12,6 +12,8 @@
 └── requirements.txt
 ```
 
+The ATSADBench and SKAB datasets have been placed in the dataset/ATSADBench and dataset/SKAB directories, respectively. 
+Note that ATSADBench is only partially public due to confidentiality agreements; the release includes 800 data points, comprising normal references and test data for the three anomaly detection tasks (FVA, CDA, TVDA).
 All supplementary materials are included in the appendix.pdf
 
 ## 1. Setup and Preparation
