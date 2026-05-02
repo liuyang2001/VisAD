@@ -1,1 +1,1 @@
-Access to this data is subject to confidentiality arrangements. Once obtained, please place the corresponding .xlsx files into data/dataset/ATSADBench/.
+
