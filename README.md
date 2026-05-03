@@ -1,4 +1,4 @@
-# VisTASD Project
+# VisAD Project
 
 ## 0. Project Directory
 
