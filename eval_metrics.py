@@ -74,9 +74,16 @@ def compute_latency_contiguity_on_windows(win_gt: np.ndarray, win_pred: np.ndarr
     return np.mean(latencies), np.mean(contigs)
 
 
-def load_config():
-    with open("config/main_config.yaml", "r", encoding="utf-8") as f:
+def load_config(config_path):
+    with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+def read_original_data(file_path):
+    suffix = file_path.suffix.lower()
+    if suffix == '.csv':
+        return pd.read_csv(file_path, sep=None, engine='python')
+    else:
+        return pd.read_excel(file_path)
 
 def reconstruct_series(result_df, original_df):
     gt_full = original_df['Label'].values.astype(int)
@@ -97,13 +104,20 @@ def reconstruct_series(result_df, original_df):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, required=True, help="Path to config file")
     parser.add_argument("--mode", type=str, default=None, help="Override config mode")
     args = parser.parse_args()
 
-    cfg = load_config()
+    cfg = load_config(args.config)
     mode = args.mode if args.mode else cfg['experiment']['mode']
     
     data_dir = Path(cfg['paths']['dataset'])
+    if not data_dir.exists():
+        if "atsad" in args.config.lower():
+            data_dir = Path("data/dataset/ATSADBench")
+        else:
+            data_dir = Path("data/dataset/SKAB")
+
     base_output_dir = Path(cfg['paths']['output_dir'])
     target_results_dir = base_output_dir / mode 
     
@@ -111,7 +125,9 @@ def main():
         print(f"Error: Results directory {target_results_dir} not found.")
         return
 
+    print(f"\n" + "="*60)
     print(f"=== Evaluating Metrics for Mode: [{mode}] ===")
+    print("="*60)
     
     result_files = sorted(list(target_results_dir.glob(f"Result_*_{mode}.xlsx")))
     if not result_files:
@@ -122,85 +138,84 @@ def main():
     
     for res_file in result_files:
         fname_base = res_file.name.replace("Result_", "").replace(f"_{mode}.xlsx", "")
-        csv_name = fname_base + ".csv"
-        csv_path = data_dir / csv_name
-        
-        if not csv_path.exists():
-            print(f"  [Warn] Original data {csv_name} not found, skipping.")
+        potential_files = list(data_dir.glob(f"{fname_base}*"))
+        if not potential_files:
             continue
-            
+        
+        csv_path = potential_files[0]
         print(f"  -> Processing: {fname_base}")
         
         try:
             res_df = pd.read_excel(res_file)
-            orig_df = pd.read_csv(csv_path, sep=None, engine='python')
+            orig_df = read_original_data(csv_path)
             
-            if 'Latency' in res_df.columns:
-                avg_inference_time = res_df['Latency'].mean()
-            elif 'Latency_Seconds' in res_df.columns:
-                avg_inference_time = res_df['Latency_Seconds'].mean()
-            else:
-                avg_inference_time = 0.0
+            inf_time = res_df['Latency'].mean() if 'Latency' in res_df.columns else 0.0
 
             gt, pred = reconstruct_series(res_df, orig_df)
             
-            # 1. Point Metrics
+            # Point, PA, Window Metrics
             p, r, f1, acc, tp, fp, fn, tn = compute_binary_metrics(gt, pred)
-            
-            # 2. Point Adjustment
             p_pa, r_pa, f1_pa, acc_pa = point_adjustment(gt, pred)
             
-            # 3. Window Metrics
-            WINDOW_SIZE = 64
-            win_gt = []
-            win_pred = []
+            WINDOW_SIZE = cfg['experiment']['window_size']
+            win_gt, win_pred = [], []
             for i in range(0, len(gt), WINDOW_SIZE):
                 chunk_gt = gt[i : i + WINDOW_SIZE]
                 chunk_pred = pred[i : i + WINDOW_SIZE]
+                if len(chunk_gt) == 0: continue
                 win_gt.append(1 if np.any(chunk_gt == 1) else 0)
                 win_pred.append(1 if np.any(chunk_pred == 1) else 0)
-            win_gt = np.array(win_gt)
-            win_pred = np.array(win_pred)
-            pw, rw, f1w, accw, tpw, fpw, fnw, tnw = compute_binary_metrics(win_gt, win_pred)
             
-            # 4. Latency & Contiguity
-            avg_lat, avg_cont = compute_latency_contiguity_on_windows(win_gt, win_pred)
+            pw, rw, f1w, accw, _, _, _, _ = compute_binary_metrics(np.array(win_gt), np.array(win_pred))
+            avg_lat, avg_cont = compute_latency_contiguity_on_windows(np.array(win_gt), np.array(win_pred))
             
             row = {
                 "Dataset": fname_base,
-                "P_point": round(p, 4), "R_point": round(r, 4), "F1_point": round(f1, 4), "Acc_point": round(acc, 4),
-                "P_PA": round(p_pa, 4), "R_PA": round(r_pa, 4), "F1_PA": round(f1_pa, 4), "Acc_PA": round(acc_pa, 4),
-                "P_win": round(pw, 4), "R_win": round(rw, 4), "F1_win": round(f1w, 4), "Acc_win": round(accw, 4),
-                "Avg_Latency_Win": round(avg_lat, 2),
-                "Avg_Contiguity_Win": round(avg_cont, 4),
-                "Avg_VLM_Latency": round(avg_inference_time, 4),
-                "TP": tp, "FP": fp, "FN": fn, "TN": tn
+                "F1_point": f1, "P_point": p, "R_point": r, "Acc_point": acc,
+                "F1_PA": f1_pa, "P_PA": p_pa, "R_PA": r_pa,
+                "F1_win": f1w, "P_win": pw, "R_win": rw, "Acc_win": accw,
+                "Avg_Latency_Win": avg_lat,
+                "Avg_Contiguity_Win": avg_cont,
+                "Avg_Inference_Latency": inf_time
             }
             summary_list.append(row)
-            
             pd.DataFrame([row]).to_excel(res_file.parent / f"Metrics_{fname_base}.xlsx", index=False)
-
         except Exception as e:
             print(f"    [Error] {fname_base}: {e}")
 
     if summary_list:
         summary_df = pd.DataFrame(summary_list)
-        mean_row = summary_df.mean(numeric_only=True)
-        mean_row["Dataset"] = "AVERAGE"
-        summary_df = pd.concat([summary_df, pd.DataFrame([mean_row])], ignore_index=True)
+        
+        extra_rows = []
+        
+        if "atsad" in args.config.lower():
+            tasks = ["CDA", "FVA", "TVDA"]
+            print("\n>>> Grouping ATSAD Tasks (Averaging IL & OL)...")
+            for t_name in tasks:
+                task_df = summary_df[summary_df['Dataset'].str.contains(t_name)]
+                if not task_df.empty:
+                    t_mean = task_df.mean(numeric_only=True).to_dict()
+                    t_mean["Dataset"] = f"AVG_{t_name}"
+                    extra_rows.append(t_mean)
+        
+        mean_all = summary_df.mean(numeric_only=True).to_dict()
+        mean_all["Dataset"] = "TOTAL_AVERAGE"
+        
+        final_summary_df = pd.concat([
+            summary_df, 
+            pd.DataFrame(extra_rows), 
+            pd.DataFrame([mean_all])
+        ], ignore_index=True)
+        
+        numeric_cols = final_summary_df.select_dtypes(include=[np.number]).columns
+        final_summary_df[numeric_cols] = final_summary_df[numeric_cols].round(4)
         
         summary_path = target_results_dir / f"SUMMARY_METRICS_{mode}.xlsx"
-        summary_df.to_excel(summary_path, index=False)
+        final_summary_df.to_excel(summary_path, index=False)
         
-        print("\n" + "="*50)
-        print(f"FINAL SUMMARY - {mode.upper()}")
-        print(f"Avg F1 (Point):      {mean_row['F1_point']:.4f}")
-        print(f"Avg F1 (PA):         {mean_row['F1_PA']:.4f}")
-        print(f"Avg F1 (Window):     {mean_row['F1_win']:.4f}")
-        print(f"Avg Detection Delay: {mean_row['Avg_Latency_Win']:.2f} windows")
-        print(f"Avg Inference Time:  {mean_row['Avg_VLM_Latency']:.4f} s") 
-        print(f"Saved to: {summary_path}")
-        print("="*50)
+        print(f"\nFinal summary for {mode.upper()} saved to: {summary_path}")
+        for row in extra_rows:
+            print(f"  -> {row['Dataset']}: F1_point={row['F1_point']:.4f}, F1_win={row['F1_win']:.4f}")
 
 if __name__ == "__main__":
     main()

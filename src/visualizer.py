@@ -1,10 +1,13 @@
 import json
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  
 import matplotlib.pyplot as plt
 import io
 import base64
 from pathlib import Path
-
+plt.rcParams['font.sans-serif'] = ['SimHei'] 
+plt.rcParams['axes.unicode_minus'] = False     
 class ParametricVisualizer:
     def __init__(self, config_path=None, save_dir=None):
 
@@ -84,7 +87,7 @@ class ParametricVisualizer:
         plt.close(fig)
         return b64_str
 
-    def generate_views(self, filename, raw_matrices, window_idx=None, var_names=None, use_grayscale=False):
+    def generate_views(self, filename, raw_matrices, window_idx=None, var_names=None, use_grayscale=False,skip_threshold=False):
         fname_key = Path(filename).name 
         
         if use_grayscale:
@@ -109,6 +112,8 @@ class ParametricVisualizer:
             if m_key not in raw_matrices: continue
 
             if use_grayscale:
+                processed = raw_matrices[m_key]
+            elif skip_threshold: 
                 processed = raw_matrices[m_key]
             else:
                 p = current_params.get(m_key, {"t1": 1.0, "t2": 1.0})

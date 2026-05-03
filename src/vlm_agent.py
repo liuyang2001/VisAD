@@ -21,7 +21,7 @@ IMAGES (in order)
         - White  ≈ 0  (almost no difference),
         - Blue   ≈ -1,
         - Red    ≈  1.
-      The closer to white, the smaller the difference; the closer to blue or red, the larger the difference from NORMAL.
+      The closer to white, the smaller the difference; the closer to blue or red, the larger the difference from NORMAL. 
 
 (2) TEST Euclidean-diff (diff)
     - Same as (1), but the Euclidean distance is computed on first-difference sequences(value at t − value at t−1), separately for TEST and NORMAL.
@@ -38,7 +38,7 @@ IMAGES (in order)
         - White  ≈ 0  (almost no difference),
         - Blue   ≈ -1,
         - Red    ≈  1.
-      The closer to white, the smaller the difference; the closer to blue or red, the larger the difference from NORMAL.
+      The closer to white, the smaller the difference; the closer to blue or red, the larger the difference from NORMAL. 
 
 (5) TEST MI-diff (diff)
     - Same as (4), but the mutual information is computed on first-difference sequences(value at t − value at t−1), separately for TEST and NORMAL.
@@ -57,7 +57,6 @@ For each TEST window:
 1. Time-step anomaly labeling
    - Based on the Euclidean-diff images and MI-diff images (value, diff, and rolling variance), decide for the {window_size} time steps whether they are normal (0) or anomalous (1).
    - The output should be a binary array of length {window_size}.
-
 2. Root Cause Analysis
    - If all time steps are anomalous, identify the most likely root-cause variables.
    - If all time steps are normal, output [] for "root_cause_variables".
@@ -86,6 +85,7 @@ Rules:
 - "Label" MUST be an array of exactly {window_size} integers (0 or 1).
 - "root_cause_variables" MUST be a JSON array. If all labels are 0, output [].
 - Do NOT output anything after this JSON block.
+
 """
 
 PROMPT_EU_ONLY = """
@@ -373,10 +373,8 @@ Rules:
 - Do NOT output anything after this JSON block.
 """
 
-
 class VLMAgent:
     def __init__(self, config, window_size=64):
-
         self.client = OpenAI(
             api_key=config['api_key'],
             base_url=config['base_url']
@@ -389,7 +387,8 @@ class VLMAgent:
             "eu_only": PROMPT_EU_ONLY,
             "mi_only": PROMPT_MI_ONLY,
             "value_only": PROMPT_VALUE_ONLY,
-            "no_residual": PROMPT_NO_RESIDUAL
+            "no_residual": PROMPT_NO_RESIDUAL,
+            "no_threshold_all": PROMPT_ALL
         }
         
         self.mode_keys = {
@@ -397,35 +396,46 @@ class VLMAgent:
             "eu_only": ["eu_val", "eu_diff", "eu_var"],
             "mi_only": ["mi_val", "mi_diff", "mi_var"],
             "value_only": ["eu_val", "mi_val"],
-            "no_residual": ["eu_val", "eu_diff", "eu_var", "mi_val", "mi_diff", "mi_var"]
+            "no_residual": ["eu_val", "eu_diff", "eu_var", "mi_val", "mi_diff", "mi_var"],
+            "no_threshold_all": ["eu_val", "eu_diff", "eu_var", "mi_val", "mi_diff", "mi_var"] 
         }
 
     def _parse_json(self, text):
-        match = re.search(r"Final Answer:\s*(\{.*\})", text, re.DOTALL)
-        if not match:
-            match = re.search(r"(\{.*\})", text, re.DOTALL)
+        is_padded = False
         
-        if match:
+        analysis_process = "No process found"
+        if "Analysis Process" in text:
             try:
-                data = json.loads(match.group(1))
-                if "Label" not in data: data["Label"] = [0] * self.window_size
-                if "root_cause_variables" not in data: data["root_cause_variables"] = []
-                
-                labels = data["Label"]
-                if not isinstance(labels, list): labels = [0] * self.window_size
-                
-                if len(labels) < self.window_size: 
-                    labels = labels + [0] * (self.window_size - len(labels))
-                elif len(labels) > self.window_size: 
-                    labels = labels[:self.window_size]
-                
-                data["Label"] = labels
-                
-                return data
-            except json.JSONDecodeError:
+                parts = re.split(r'Analysis Process["\']?\s*[:\-]?\s*', text, flags=re.IGNORECASE)
+                if len(parts) > 1:
+                    analysis_process = parts[1].split("Final Answer:")[0].strip()
+            except: pass
+
+        json_candidates = re.findall(r'\{.*?\s*"Label":\s*\[.*?\]\s*\}', text, re.DOTALL)
+        
+        target_label = None
+        target_rc = []
+        
+        if json_candidates:
+            try:
+                data = json.loads(json_candidates[0].replace('\\"', '"'))
+                target_label = data.get("Label")
+                target_rc = data.get("root_cause_variables", [])
+            except:
                 pass
         
-        return {"Label": [0]*self.window_size, "root_cause_variables": [], "error": "parse_failed"}
+        if target_label is None or not isinstance(target_label, list):
+            target_label = [0] * self.window_size
+            is_padded = True
+        elif len(target_label) != self.window_size:
+            target_label = target_label[:self.window_size] + [0] * max(0, self.window_size - len(target_label))
+            
+        return {
+            "Label": target_label,
+            "root_cause_variables": target_rc,
+            "analysis_process": analysis_process,
+            "is_padded": is_padded
+        }
 
     def analyze(self, mode, images_map):
         if mode not in self.prompt_map:
@@ -447,7 +457,13 @@ class VLMAgent:
                 valid_imgs += 1
         
         if valid_imgs == 0:
-            return {"Label": [0]*self.window_size, "root_cause_variables": [], "latency": 0.0}
+            return {
+                "Label": [0]*self.window_size, 
+                "root_cause_variables": [], 
+                "latency": 0.0, 
+                "is_padded": True, 
+                "raw_model_response": "No images provided"
+            }
 
         max_retries = 3
         for attempt in range(max_retries):
@@ -468,12 +484,19 @@ class VLMAgent:
                 result = self._parse_json(raw_text)
                 
                 result["latency"] = elapsed
-                result["raw_model_response"] = raw_text 
+                result["raw_model_response"] = raw_text  
                 
                 return result
             
             except Exception as e:
                 print(f"  [VLM Error] Attempt {attempt+1}/{max_retries}: {e}")
+                if attempt == max_retries - 1:
+                    return {
+                        "Label": [0]*self.window_size, 
+                        "root_cause_variables": [], 
+                        "latency": 0.0, 
+                        "is_padded": True, 
+                        "error": "api_failed",
+                        "raw_model_response": str(e)
+                    }
                 time.sleep(2)
-        
-        return {"Label": [0]*self.window_size, "root_cause_variables": [], "error": "api_failed", "latency": 0.0}
